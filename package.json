@@ -1,0 +1,42 @@
+{
+  "name": "dpd-passport",
+  "version": "0.1.1",
+  "description": "Passport for deployd",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": {
+    "name": "simpletechs.net"
+  },
+  "license": "FreeBSD",
+  "dependencies": {
+    "passport-local": "^1.0.0",
+    "passport": "^0.2.0",
+    "passport-facebook": "^1.0.3",
+    "passport-google": "^0.3.0",
+    "passport-twitter": "^1.0.2",
+    "debug": "^0.7.4",
+    "passport-github": "^0.1.5"
+  },
+  "_id": "dpd-passport@0.1.1",
+  "dist": {
+    "shasum": "e53f1da806b8075e5d2f9c1510712a42389d047d",
+    "tarball": "http://registry.npmjs.org/dpd-passport/-/dpd-passport-0.1.1.tgz"
+  },
+  "_from": "dpd-passport@*",
+  "_npmVersion": "1.3.26",
+  "_npmUser": {
+    "name": "drastick",
+    "email": "mike@drastick.com"
+  },
+  "maintainers": [
+    {
+      "name": "drastick",
+      "email": "mike@drastick.com"
+    }
+  ],
+  "directories": {},
+  "_shasum": "e53f1da806b8075e5d2f9c1510712a42389d047d",
+  "_resolved": "http://registry.npmjs.org/dpd-passport/-/dpd-passport-0.1.1.tgz"
+}
