@@ -1,5 +1,5 @@
 {
-  "name": "dpd-passport",
+  "name": "dpd-passport-patched",
   "version": "0.1.1",
   "description": "Passport for deployd",
   "main": "index.js",
@@ -20,10 +20,6 @@
     "passport-github": "^0.1.5"
   },
   "_id": "dpd-passport@0.1.1",
-  "dist": {
-    "shasum": "e53f1da806b8075e5d2f9c1510712a42389d047d",
-    "tarball": "http://registry.npmjs.org/dpd-passport/-/dpd-passport-0.1.1.tgz"
-  },
   "_from": "dpd-passport@*",
   "_npmVersion": "1.3.26",
   "_npmUser": {
