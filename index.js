@@ -1,20 +1,22 @@
-var Resource = require('deployd/lib/resource')
-  , Script = require('deployd/lib/script')
-  , UserCollection = require('deployd/lib/resources/user-collection')
-  , internalClient = require('deployd/lib/internal-client')
-  , util = require('util')
-  , url = require('url')
-  , debug = require('debug')('dpd-passport')
+var Resource = require('deployd/lib/resource'),
+    Script = require('deployd/lib/script'),
+    UserCollection = require('deployd/lib/resources/user-collection'),
+    internalClient = require('deployd/lib/internal-client'),
+    util = require('util'),
+    url = require('url'),
+    debug = require('debug')('dpd-passport'),
 
-  // Stetegies
-  , LocalStrategy = require('passport-local').Strategy
-  , TwitterStrategy = require('passport-twitter').Strategy
-  , FacebookStrategy = require('passport-facebook').Strategy
-  , GitHubStrategy = require('passport-github').Strategy
+    // Stetegies
+    LocalStrategy = require('passport-local').Strategy,
+    TwitterStrategy = require('passport-twitter').Strategy,
+    FacebookStrategy = require('passport-facebook').Strategy,
+    GitHubStrategy = require('passport-github').Strategy,
+    GoogleStrategy = require('passport-google-oauth').OAuth2Strategy,
 
-  // Globals
-  , DEFAULT_SALT_LEN = 256
-  , CALLBACK_URL = 'callback';
+    // Globals
+    DEFAULT_SALT_LEN = 256,
+    CALLBACK_URL = 'callback',
+    DPD_PASSPORT_SALT = process.env.DPD_PASSPORT_SALT;
 
 function AuthResource() {
     Resource.apply(this, arguments);
@@ -23,10 +25,14 @@ function AuthResource() {
     var config = this.config;
     config.SALT_LEN = config.SALT_LEN || DEFAULT_SALT_LEN;
     config.baseURL = config.baseURL || process.env.DPD_PASSPORT_BASEURL;
+    if(!config.baseURL) {
+        debug('baseURL missing, cannot enable any OAuth Module')
+    }
 
     config.allowTwitter = config.allowTwitter && config.baseURL && config.twitterConsumerKey && config.twitterConsumerSecret;
     config.allowFacebook = config.allowFacebook && config.baseURL && config.facebookAppId && config.facebookAppSecret;
     config.allowGitHub = config.allowGitHub && config.baseURL && config.githubClientId && config.githubClientSecret;
+    config.allowGoogle = config.allowGoogle && config.baseURL && config.googleClientId && config.googleClientSecret;
 }
 util.inherits(AuthResource, Resource);
 
@@ -41,8 +47,12 @@ AuthResource.prototype.initPassport = function() {
 
     var config = this.config,
         dpd = internalClient.build(process.server, {isRoot: true}, []),
-        userCollection = process.server.resources.filter(function(res) {return res.config.type === 'UserCollection'})[0],
+        // PATCH: Force choosing user collection with name "users"
+        userCollection = process.server.resources.filter(function(res) {
+            return res.config.type === 'UserCollection' && res.name == 'users'; 
+        })[0],
         passport = (this.passport = require('passport'));
+
 
     // Will be called when socialLogins are done
     // Check for existing user and update
@@ -53,18 +63,14 @@ AuthResource.prototype.initPassport = function() {
         userCollection.store.first({socialAccountId: profile.id}, function(err, user) {
             if(err) { return done(err); }
 
-            // Patch: Always update name/ID/provider from facebook, not only on registration
-            var saveUser = {
+            /*
+            ORG
+            var saveUser = user || {
+                // these properties will only be set on first insert
                 socialAccountId: profile.id,
                 socialAccount: profile.provider,
                 name: profile.displayName
-            }
-            //var saveUser = user || {
-                // these properties will only be set on first insert
-                // socialAccountId: profile.id,
-                // socialAccount: profile.provider,
-                // name: profile.displayName
-            //};
+            };
 
             // update the profile on every login, so that we always have the latest info available
             saveUser.profile = profile;
@@ -73,18 +79,49 @@ AuthResource.prototype.initPassport = function() {
                 debug('updating existing user w/ id', user.id);
             } else {
                 debug('creating new user w/ socialAccountId=%s', saveUser.socialAccountId);
-            }
 
-            /* we need to fake the password here, because deployd will force us to on create
-            // but we'll clear that later
-            saveUser.username = saveUser.socialAccount + '_' + saveUser.socialAccountId;
-            saveUser.password = saveUser.username;
+                // we need to fake the password here, because deployd will force us to on create
+                // but we'll clear that later
+                saveUser.username = saveUser.socialAccount + '_' + saveUser.socialAccountId;
+                saveUser.password = saveUser.username;
+            }
+            saveUser.$limitRecursion = 1000;
+            dpd.users.put(saveUser, function(res, err) {
+                if(err) { return done(err); }
+
+                // before actually progressing the request, we need to clear username + password for social users
+                userCollection.store.update({id: res.id}, {username: null, password: null}, function() {
+                    done(null, res||saveUser);
+                });
+            });
             */
 
-            // PATCH: We try to fetch user email from facebook and store it as username!            
+            // Patch: Always update user profile from facebook, not only on registration
+            var saveUser = {
+                socialAccountId: profile.id,
+                socialAccount: profile.provider,
+                name: profile.displayName
+            };
+
+            // update the profile on every login, so that we always have the latest info available
+            saveUser.profile = profile;
+
+            if(user) {
+                debug('updating existing user w/ id', user.id);
+            } else {
+                debug('creating new user w/ socialAccountId=%s', saveUser.socialAccountId);
+
+                // we need to fake the password here, because deployd will force us to on create
+                // but we'll clear that later
+                //saveUser.username = saveUser.socialAccount + '_' + saveUser.socialAccountId;
+                //saveUser.password = saveUser.username;
+            }
+
+            // PATCH: We fetch user email from facebook and store it as username in deployd...
             if(typeof(profile.emails) == "object" && profile.emails[0].value){
+
                 saveUser.username = profile.emails[0].value; // Email from facebook
-                saveUser.password = "" + Math.round(Math.random()*10000000000000);
+                saveUser.password = "" + Math.round( Math.random() * 100000000000 ); // Set a random password
 
                 // If user is already registered (with username+password), update that user instead of creating new
                 dpd.users.get({username:saveUser.username}, function(users, err){
@@ -92,8 +129,8 @@ AuthResource.prototype.initPassport = function() {
                         return done(err)
 
                     if(users && users.length > 0){  // Username is already registered
-                        saveUser.id = users[0].id;  // Store id, that way dpd will update this user, not create a new 
-                        delete saveUser.password;   // User exists, so don't overwrite existing password
+                        saveUser.id = users[0].id;  // Add id, that way users.put will update this user instead of creating a new 
+                        delete saveUser.password;   // User exists, so don't overwrite the existing password
                     }
 
                     // Add new or update existing user
@@ -108,14 +145,14 @@ AuthResource.prototype.initPassport = function() {
             else{
                 // Facebook didn't provide a user email. Let's store a default email and password
                 saveUser.username = profile.provider + '_' + profile.id + "@example.com";
-                saveUser.password = "" + Math.round(Math.random()*10000000000000);
+                saveUser.password = Math.random().toString();
 
                 dpd.users.put(saveUser, function(res, err){
                     if(err)
                         return done(err);
                     else 
                         done(null, res||saveUser)
-                })                
+                });
             }
         });
     };
@@ -127,12 +164,18 @@ AuthResource.prototype.initPassport = function() {
                 if(err) { return done(err); }
 
                 if(user) {
-                    var salt = user.password.substr(0, config.SALT_LEN)
-                      , hash = user.password.substr(config.SALT_LEN);
+                    var salt = user.password.substr(0, config.SALT_LEN),
+                        hash = user.password.substr(config.SALT_LEN);
 
                     if(hash === UserCollection.prototype.hash(password, salt)) {
                         return done(null, user);
                     }
+
+                    // Patch: Login in with token – token should equal the hash of username + salt
+                    else if(password == UserCollection.prototype.hash(username, DPD_PASSPORT_SALT)){  // Here the token is stored in the password field.
+                        return done(null, user); 
+                    }
+
                 }
 
                 return done(null, false, { message: 'Invalid password' });
@@ -157,13 +200,12 @@ AuthResource.prototype.initPassport = function() {
 
     if(config.allowFacebook) {
         var cbURL = url.resolve(config.baseURL, this.path + '/facebook/' + CALLBACK_URL);
-        
+
         debug('Initializing Facebook Login, cb: %s', cbURL);
         passport.use(new FacebookStrategy({
             clientID: config.facebookAppId,
             clientSecret: config.facebookAppSecret,
-            callbackURL: cbURL,
-            authorizationURL: "https://www.facebook.com/v2.0/dialog/oauth" // ADDED: Move to Graph API 2.0
+            callbackURL: cbURL
           },
           socialAuthCallback
         ));
@@ -182,12 +224,27 @@ AuthResource.prototype.initPassport = function() {
         ));
     }
 
-    this.initialized = true;
-}
+    if(config.allowGoogle) {
+        var cbURL = url.resolve(config.baseURL, this.path + '/google/' + CALLBACK_URL);
 
-var sendResponse = function(ctx, err, session) {
-    if(ctx.session.data.redirectURL) {
-        var redirectURL = ctx.session.data.redirectURL;
+        debug('Initializing Google Login, cb: %s', cbURL);
+        passport.use(new GoogleStrategy({
+            clientID: config.googleClientId,
+            clientSecret: config.googleClientSecret,
+            callbackURL: cbURL
+          },
+
+          socialAuthCallback
+        ));
+    }
+
+    this.initialized = true;
+};
+
+var sendResponse = function(ctx, err, disableSessionId) {
+    var sessionData = ctx.session.data;
+    if(sessionData.redirectURL) {
+        var redirectURL = url.parse(sessionData.redirectURL, true);
         // delete search so that query is used
         delete redirectURL.search;
 
@@ -200,8 +257,11 @@ var sendResponse = function(ctx, err, session) {
         } else {
             // append user + session id to the redirect url
             redirectURL.query.success = true;
-            redirectURL.query.sid = session.id;
-            redirectURL.query.uid = session.uid;
+
+            if(!disableSessionId) {
+                redirectURL.query.sid = sessionData.id;
+                redirectURL.query.uid = sessionData.uid;
+            }
         }
 
         var redirectURLString = '';
@@ -214,18 +274,22 @@ var sendResponse = function(ctx, err, session) {
         // redirect the user
         ctx.res.setHeader("Location", redirectURLString);
         ctx.res.statusCode = 302;
-        
+
         ctx.done(null, 'This page has moved to ' + redirectURLString);
     } else {
         if(err) {
             ctx.res.statusCode = 401;
+            console.error(err);
             return ctx.done('bad credentials');
         } else {
-            ctx.done(err, session);
+            ctx.done(err, { path: sessionData.path, id: sessionData.id, uid: sessionData.uid });
         }
     }
-}
+};
+
 AuthResource.prototype.handle = function (ctx, next) {
+    var config = this.config;
+    
     // globally handle logout
     if(ctx.url === '/logout') {
         if (ctx.res.cookies) ctx.res.cookies.set('sid', null, {overwrite: true});
@@ -240,13 +304,15 @@ AuthResource.prototype.handle = function (ctx, next) {
 
     // determine requested module
     var requestedModule, options = {};
-
-       switch(parts[0]) {
-
+    switch(parts[0]) {
         case 'login':
             if(ctx.method === 'POST' && this.config.allowLocal) {
                 requestedModule = 'local';
             }
+            break;
+        // PATCH: allow loginWithToken
+        case 'loginWithToken':
+            requestedModule = 'local';
             break;
         case 'twitter':
             if(this.config.allowTwitter) {
@@ -272,45 +338,30 @@ AuthResource.prototype.handle = function (ctx, next) {
                     try {
                         options.scope = JSON.parse(this.config.githubScope);
                     } catch(ex) {
-                        debug('Error parsing the githubScope')
+                        debug('Error parsing the githubScope');
                     }
                 }
             }
             break;
-        case 'loginWithToken': // Patch: added login with token
-            requestedModule = "loginWithToken";
+        case 'google':
+            if(this.config.allowGoogle) {
+                requestedModule = 'google';
+                options.scope = this.config.googleScope || 'profile email';
+            }
             break;
         default:
             break;
     }
 
     if(requestedModule) {
-        // logout the user if he was logged in before, but only if that's not a callback
-        if(ctx.session && !(parts && parts.length >= 2 && parts[1] === CALLBACK_URL)) {
-            debug('Cleaning leftover session. %j', parts);
-            // throw away the old session
-            ctx.session.remove(function() {
-                // ignore the callback here, this is just for cleanup
-            });
-
-            // this is not actually async, as we don't supply an existing sid
-            process.server.sessions.createSession(function(err, sess) {
-                ctx.session = sess;
-            });
-
-            if (ctx.res.cookies) {
-                ctx.res.cookies.set('sid', ctx.session.sid, {overwrite: true});
-            }
-        }
-
         // save the redirectURL for later use
         if(ctx.query.redirectURL && this.config.allowedRedirectURLs) {
             try {
-                this.regEx = this.regEx || new RegExp(this.config.allowedRedirectURLs, 'i');
-                if(ctx.query.redirectURL.match(this.regEx)) {
+                this.regEx = this.regEx || new RegExp(this.config.allowedRedirectURLs, 'i');
 
+                if(ctx.query.redirectURL.match(this.regEx)) {
                     // save this info into the users session, so that we can access it later (even if the user was redirected to facebook)
-                    ctx.session.data.redirectURL = url.parse(ctx.query.redirectURL, true);
+                    ctx.session.set({redirectURL: ctx.query.redirectURL});
                 } else {
                     debug(ctx.query.redirectURL, 'did not match', this.config.allowedRedirectURLs);
                 }
@@ -319,49 +370,34 @@ AuthResource.prototype.handle = function (ctx, next) {
             }
         }
 
-
         this.initPassport();
-
-        // Patch – added loginWithToken – login using username+token
-        if(requestedModule == "loginWithToken"){
-
-            var username    = (ctx.req.query.username || ctx.req.body.username)
-            var token       = (ctx.req.query.token || ctx.req.body.token)
-            var userCollection = process.server.resources.filter(function(res) {return res.config.type === 'UserCollection'})[0];
-
-            userCollection.store.first({username: username}, function(err, user) {
-                if(err)
-                    return sendResponse(ctx, err, session);
-                if(user){
-
-                    var hash = userCollection.hash(username, "348ea2d3fc8b3a46f86b8dc37a9377107e255c8e");
-                    if(token === hash){
-                        ctx.session.set({path: '/users', uid: user.id}).save(function(err, session){
-                            return sendResponse(ctx, err, session);
-                        })
-                    }
-                    else return sendResponse(ctx, 'bad credentials');
-                }
-                else return sendResponse(ctx, 'bad credentials');
-            })
-            return;
-        }
-
-        // Usual logins...
         this.passport.authenticate(requestedModule, options, function(err, user, info) {
             if (err || !user) {
                 debug('passport reported error: ', err, user, info);
-                return sendResponse(ctx, 'bad credentials');
+                console.error(err);
+                return sendResponse(ctx, 'bad credentials', config.disableSessionId);
             }
 
-            ctx.session.set({path: '/users', uid: user.id}).save(function(err, session) {
-                return sendResponse(ctx, err, session);
+            var sessionData = {
+                path: '/users',
+                uid: user.id
+            };
+
+            // be backwards compatible here, check if the function already exists
+            if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
+                sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
+            }
+            ctx.session.set(sessionData).save(function(err, session) {
+                // apply the sid manually to the session, since only now do we have the id
+                ctx.res.cookies.set('sid', session.id, { overwrite: true });
+
+                return sendResponse(ctx, err, config.disableSessionId);
             });
         })(ctx.req, ctx.res, ctx.next||ctx.done);
     } else {
         // nothing matched, sorry
-        debug('no module found: ', parts[0]);
-        return sendResponse(ctx, 'bad credentials');
+        console.error('no module found: %s', parts[0]);
+        return sendResponse(ctx, 'bad credentials', config.disableSessionId);
     }
 };
 
@@ -379,6 +415,10 @@ AuthResource.basicDashboard = {
     type        : 'text',
     description : 'Specify a regular expression for which redirect URLs you want to allow. Supply as JS-Regex: "^http://www\.your-page.com/.*$", matching is always done case-insensitive. Defaults to "" (i.e. NO redirects will be allowed!)'
   },{
+    name        : 'disableSessionId',
+    type        : 'checkbox',
+    description : 'Disable appending the Session Id to the redirect URL. This is a security measure for the web. You can access the Session Id from the Cookie-Header.'
+  },{
     name        : 'allowLocal',
     type        : 'checkbox',
     description : 'Allow users to login via Username + Password'
@@ -394,6 +434,10 @@ AuthResource.basicDashboard = {
     name        : 'allowGitHub',
     type        : 'checkbox',
     description : 'Allow users to login via GitHub (requires GitHub Id and Secret!)'
+  },{
+    name        : 'allowGoogle',
+    type        : 'checkbox',
+    description : 'Allow users to login via Google'
   },{
     name        : 'twitterConsumerKey',
     type        : 'text'/*,
@@ -426,5 +470,16 @@ AuthResource.basicDashboard = {
     name        : 'githubScope',
     type        : 'text',
     description : 'If your application needs extended permissions, they can be requested here. Supply as JS-Array: "[\'repo\']"'
-  }]
+  }, {
+    name        : 'googleClientId',
+    type        : 'text'
+  }, {
+    name        : 'googleClientSecret',
+    type        : 'text'
+  }, {
+    name        : 'googleScope',
+    type        : 'text',
+    description : 'defaults to "profile email"'
+  }
+  ]
 };
