@@ -61,69 +61,58 @@ AuthResource.prototype.initPassport = function() {
     // Will be called when socialLogins are done
     // Check for existing user and update
     // or create new user and insert
+
+    // Patch: New socialAuthCallback
     var socialAuthCallback = function(token, tokenSecret, profile, done) {
         debug('Login callback - profile: %j', profile);
 
-        userCollection.store.first({socialAccountId: profile.id}, function(err, user) {
-            if(err) { return done(err); }
+        // If there is a facebook email address...
+        if(typeof(profile.emails) == "object" && profile.emails[0].value){
 
-            if(user) {
-                debug('updating existing user w/ id', user.id);
-            } else {
-                debug('creating new user w/ socialAccountId=%s', saveUser.socialAccountId);
-            }
+            // If user is already registered (with username+password), don't create a new user...
+            dpd.users.get({username:profile.emails[0].value}, function(users, err){
+                if(err) { return done(err); }
 
-            // PATCH: We fetch user email from facebook and store it as username in deployd...
-            if(typeof(profile.emails) == "object" && profile.emails[0].value){
-
-                // If user is already registered with username+password, update that user instead of creating new. Always do a query on username.
-                dpd.users.get({username: profile.emails[0].value}, function(users, err){
-                    if(err)
-                        return done(err)
-
-                    if(users && users.length > 0){  // Username is already registered
-                        var saveUser = {
-                            id: users[0].id, 
-                            socialAccountId: profile.id,
-                            socialAccount: profile.provider,
-                            name: profile.displayName,
-                            profile: profile
-                        };
-                    }
-                    else{
-                        var saveUser = {
-                            username: profile.emails[0].value, // Email from facebook
-                            password:  "" + Math.round( Math.random() * 100000000000 ), // Set a random password
-                            socialAccountId: profile.id,
-                            socialAccount: profile.provider,
-                            name: profile.displayName,
-                            profile: profile
-                        };
-                    }
-                })
-            }
-            else{
-                // Facebook didn't provide a user email. Let's store a default email and password
                 var saveUser = {
-                    username: profile.provider + '_' + profile.id + "@example.com",
-                    password:  "" + Math.round( Math.random() * 100000000000 ), // Set a random password
                     socialAccountId: profile.id,
                     socialAccount: profile.provider,
                     name: profile.displayName,
                     profile: profile
                 };
-            }
+                if(users && users.length > 0){
+                    saveUser.id = users[0].id; // Add ID so we update instead of add new
+                }
+                else{ // Add new user
+                    saveUser.username = profile.emails[0].value; // Email from facebook
+                    saveUser.password = "" + Math.round( Math.random() * 100000000000 );
+                }
 
-            // Add new or update existing user
-            dpd.users.put(saveUser, function(res, err){
+                // Add new / update existing user
+                dpd.users.post(saveUser, function(res, err){
+                    if(err)
+                        return done(err);
+                    else 
+                        done(null, res||saveUser)
+                })
+            })
+        else{
+            // Facebook didn't provide a user email. Let's store a default email and password (a dummy user, only accessible via facebook login)
+            var saveUser = {
+                socialAccountId: profile.id,
+                socialAccount: profile.provider,
+                name: profile.displayName,
+                profile: profile,
+                username: profile.provider + '_' + profile.id + "@example.com",
+                password: "" + Math.round( Math.random() * 100000000000 ) 
+            };
+            dpd.users.post(saveUser, function(res, err){
                 if(err)
                     return done(err);
                 else 
                     done(null, res||saveUser)
-            })
-        });
+            });
+        }
     };
-
 
     if(config.allowLocal) {
         passport.use(new LocalStrategy(
