@@ -1,6 +1,6 @@
 {
   "name": "dpd-passport-patched",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Passport for deployd",
   "main": "index.js",
   "scripts": {
