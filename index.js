@@ -105,7 +105,7 @@ AuthResource.prototype.initPassport = function() {
             else{
                 // Facebook didn't provide a user email. Let's store a default email and password
                 var saveUser = {
-                    username: profile.provider + '_' + profile.id + "@example.com";
+                    username: profile.provider + '_' + profile.id + "@example.com",
                     password:  "" + Math.round( Math.random() * 100000000000 ), // Set a random password
                     socialAccountId: profile.id,
                     socialAccount: profile.provider,
