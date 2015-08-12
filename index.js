@@ -95,6 +95,7 @@ AuthResource.prototype.initPassport = function() {
                         done(null, res||saveUser)
                 })
             })
+        }
         else{
             // Facebook didn't provide a user email. Let's store a default email and password (a dummy user, only accessible via facebook login)
             var saveUser = {
