@@ -1,4 +1,3 @@
-
 var Resource = require('deployd/lib/resource'),
     Script = require('deployd/lib/script'),
     UserCollection = require('deployd/lib/resources/user-collection'),
@@ -17,7 +16,14 @@ var Resource = require('deployd/lib/resource'),
     // Globals
     DEFAULT_SALT_LEN = 256,
     CALLBACK_URL = 'callback',
-    DPD_PASSPORT_SALT = process.env.DPD_PASSPORT_SALT;
+    DEFAULT_USERS_COLLECTION = 'users';
+
+// Helper function to get the user collection instance given a name
+function getUserCollectionInstance(userCollectionName) {
+    return process.server.resources.filter(function(res) {
+        return res.config.type === 'UserCollection' && res.name === userCollectionName;
+    })[0];
+}
 
 function AuthResource() {
     Resource.apply(this, arguments);
@@ -29,6 +35,7 @@ function AuthResource() {
     if(!config.baseURL) {
         debug('baseURL missing, cannot enable any OAuth Module')
     }
+    config.usersCollection = config.usersCollection || DEFAULT_USERS_COLLECTION;
 
     config.allowTwitter = config.allowTwitter && config.baseURL && config.twitterConsumerKey && config.twitterConsumerSecret;
     config.allowFacebook = config.allowFacebook && config.baseURL && config.facebookAppId && config.facebookAppSecret;
@@ -48,12 +55,8 @@ AuthResource.prototype.initPassport = function() {
 
     var config = this.config,
         dpd = internalClient.build(process.server, {isRoot: true}, []),
-        // PATCH: Force choosing user collection with name "users"
-        userCollection = process.server.resources.filter(function(res) {
-            return res.config.type === 'UserCollection' && res.name == 'users'; 
-        })[0],
+        userCollection = getUserCollectionInstance(config.usersCollection);
         passport = (this.passport = require('passport'));
-
 
     // Will be called when socialLogins are done
     // Check for existing user and update
@@ -64,98 +67,63 @@ AuthResource.prototype.initPassport = function() {
         userCollection.store.first({socialAccountId: profile.id}, function(err, user) {
             if(err) { return done(err); }
 
-            // // ORIGINAL
-            // var saveUser = user || {
-            //     // these properties will only be set on first insert
-            //     socialAccountId: profile.id,
-            //     socialAccount: profile.provider,
-            //     name: profile.displayName
-            // };
-
-            // // update the profile on every login, so that we always have the latest info available
-            // saveUser.profile = profile;
-
-            // if(user) {
-            //     debug('updating existing user w/ id', user.id);
-            // } else {
-            //     debug('creating new user w/ socialAccountId=%s', saveUser.socialAccountId);
-
-            //     // we need to fake the password here, because deployd will force us to on create
-            //     // but we'll clear that later
-            //     saveUser.username = saveUser.socialAccount + '_' + saveUser.socialAccountId;
-            //     saveUser.password = saveUser.username;
-            // }
-            // saveUser.$limitRecursion = 1000;
-            // dpd.users.put(saveUser, function(res, err) {
-            //     if(err) { return done(err); }
-
-            //     // before actually progressing the request, we need to clear username + password for social users
-            //     userCollection.store.update({id: res.id}, {username: null, password: null}, function() {
-            //         done(null, res||saveUser);
-            //     });
-            // });
-            
-
-            // Patch: Always update user profile from facebook, not only on registration
-            var saveUser = {
-                socialAccountId: profile.id,
-                socialAccount: profile.provider,
-                name: profile.displayName
-            };
-
-            // update the profile on every login, so that we always have the latest info available
-            saveUser.profile = profile;
-
             if(user) {
                 debug('updating existing user w/ id', user.id);
             } else {
                 debug('creating new user w/ socialAccountId=%s', saveUser.socialAccountId);
-
-                // we need to fake the password here, because deployd will force us to on create
-                // but we'll clear that later
-                //saveUser.username = saveUser.socialAccount + '_' + saveUser.socialAccountId;
-                //saveUser.password = saveUser.username;
             }
 
             // PATCH: We fetch user email from facebook and store it as username in deployd...
             if(typeof(profile.emails) == "object" && profile.emails[0].value){
 
-                saveUser.username = profile.emails[0].value; // Email from facebook
-                saveUser.password = "" + Math.round( Math.random() * 100000000000 ); // Set a random password
-
-                // If user is already registered (with username+password), update that user instead of creating new
-                dpd.users.get({username:saveUser.username}, function(users, err){
+                // If user is already registered with username+password, update that user instead of creating new. Always do a query on username.
+                dpd.users.get({username: profile.emails[0].value}, function(users, err){
                     if(err)
                         return done(err)
 
                     if(users && users.length > 0){  // Username is already registered
-                        saveUser.id = users[0].id;  // Add id, that way users.put will update this user instead of creating a new 
-                        delete saveUser.password;   // User exists, so don't overwrite the existing password
+                        var saveUser = {
+                            id: users[0].id, 
+                            socialAccountId: profile.id,
+                            socialAccount: profile.provider,
+                            name: profile.displayName,
+                            profile: profile
+                        };
                     }
-
-                    // Add new or update existing user
-                    dpd.users.put(saveUser, function(res, err){
-                        if(err)
-                            return done(err);
-                        else 
-                            done(null, res||saveUser)
-                    })
+                    else{
+                        var saveUser = {
+                            username: profile.emails[0].value, // Email from facebook
+                            password:  "" + Math.round( Math.random() * 100000000000 ), // Set a random password
+                            socialAccountId: profile.id,
+                            socialAccount: profile.provider,
+                            name: profile.displayName,
+                            profile: profile
+                        };
+                    }
                 })
             }
             else{
                 // Facebook didn't provide a user email. Let's store a default email and password
-                saveUser.username = profile.provider + '_' + profile.id + "@example.com";
-                saveUser.password = Math.random().toString();
-
-                dpd.users.put(saveUser, function(res, err){
-                    if(err)
-                        return done(err);
-                    else 
-                        done(null, res||saveUser)
-                });
+                var saveUser = {
+                    username: profile.provider + '_' + profile.id + "@example.com";
+                    password:  "" + Math.round( Math.random() * 100000000000 ), // Set a random password
+                    socialAccountId: profile.id,
+                    socialAccount: profile.provider,
+                    name: profile.displayName,
+                    profile: profile
+                };
             }
+
+            // Add new or update existing user
+            dpd.users.put(saveUser, function(res, err){
+                if(err)
+                    return done(err);
+                else 
+                    done(null, res||saveUser)
+            })
         });
     };
+
 
     if(config.allowLocal) {
         passport.use(new LocalStrategy(
@@ -170,12 +138,10 @@ AuthResource.prototype.initPassport = function() {
                     if(hash === UserCollection.prototype.hash(password, salt)) {
                         return done(null, user);
                     }
-
                     // Patch: Login in with token – token should equal the hash of username + salt
                     else if(password == UserCollection.prototype.hash(username, DPD_PASSPORT_SALT)){  // Here the token is stored in the password field.
                         return done(null, user); 
                     }
-
                 }
 
                 return done(null, false, { message: 'Invalid password' });
@@ -241,26 +207,31 @@ AuthResource.prototype.initPassport = function() {
     this.initialized = true;
 };
 
-var sendResponse = function(ctx, err, disableSessionId) {
+var sendResponse = function(ctx, err, config) {
     var sessionData = ctx.session.data;
-    if(sessionData.redirectURL) {
-        var redirectURL = url.parse(sessionData.redirectURL, true);
-        // delete search so that query is used
-        delete redirectURL.search;
+    var returnUrl = (ctx.req.cookies && ctx.req.cookies.get('_passportReturnUrl')) || null;
 
-        // make sure query is inited
-        redirectURL.query = redirectURL.query || {};
+    if(returnUrl) {
+        var redirectURL = url.parse(returnUrl, true);
 
-        if(err) {
-            redirectURL.query.success = false;
-            redirectURL.query.error = err;
-        } else {
-            // append user + session id to the redirect url
-            redirectURL.query.success = true;
+        // only append if not disabled
+        if(!config.disableReturnParams) {
+            // delete search so that query is used
+            delete redirectURL.search;
 
-            if(!disableSessionId) {
-                redirectURL.query.sid = sessionData.id;
-                redirectURL.query.uid = sessionData.uid;
+            // make sure query is inited
+            redirectURL.query = redirectURL.query || {};
+            if(err) {
+                redirectURL.query.success = false;
+                redirectURL.query.error = err;
+            } else {
+                // append user + session id to the redirect url
+                redirectURL.query.success = true;
+
+                if(!config.disableSessionId) {
+                    redirectURL.query.sid = sessionData.id;
+                    redirectURL.query.uid = sessionData.uid;
+                }
             }
         }
 
@@ -287,9 +258,9 @@ var sendResponse = function(ctx, err, disableSessionId) {
     }
 };
 
-AuthResource.prototype.handle = function (ctx, next) {
+AuthResource.prototype.handle = function(ctx, next) {
     var config = this.config;
-    
+
     // globally handle logout
     if(ctx.url === '/logout') {
         if (ctx.res.cookies) ctx.res.cookies.set('sid', null, {overwrite: true});
@@ -310,7 +281,7 @@ AuthResource.prototype.handle = function (ctx, next) {
                 requestedModule = 'local';
             }
             break;
-        // PATCH: allow loginWithToken
+        // PATCH: Allow loginWithToken
         case 'loginWithToken':
             requestedModule = 'local';
             break;
@@ -361,7 +332,7 @@ AuthResource.prototype.handle = function (ctx, next) {
 
                 if(ctx.query.redirectURL.match(this.regEx)) {
                     // save this info into the users session, so that we can access it later (even if the user was redirected to facebook)
-                    ctx.session.set({redirectURL: ctx.query.redirectURL});
+                    if (ctx.res.cookies) ctx.res.cookies.set('_passportReturnUrl', ctx.query.redirectURL);
                 } else {
                     debug(ctx.query.redirectURL, 'did not match', this.config.allowedRedirectURLs);
                 }
@@ -372,14 +343,26 @@ AuthResource.prototype.handle = function (ctx, next) {
 
         this.initPassport();
         this.passport.authenticate(requestedModule, options, function(err, user, info) {
+            var userCollection = getUserCollectionInstance(config.usersCollection);
+            var domain =  userCollection.domain;
+
             if (err || !user) {
                 debug('passport reported error: ', err, user, info);
                 console.error(err);
-                return sendResponse(ctx, 'bad credentials', config.disableSessionId);
+                if (!user) {
+                    // If the specified user collection has a login event, then run it before returning
+                    if (userCollection.events.Login) {
+                        domain.success = false;
+                        userCollection.events.Login.run(ctx, domain, function() {
+                            return sendResponse(ctx, 'bad credentials', config);
+                        });
+                    }
+                }
+                return sendResponse(ctx, 'bad credentials', config);
             }
 
             var sessionData = {
-                path: '/users',
+                path: '/' + config.usersCollection,
                 uid: user.id
             };
 
@@ -387,22 +370,39 @@ AuthResource.prototype.handle = function (ctx, next) {
             if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
                 sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
             }
-            ctx.session.set(sessionData).save(function(err, session) {
-                // apply the sid manually to the session, since only now do we have the id
-                ctx.res.cookies.set('sid', session.id, { overwrite: true });
+            delete user.password;
 
-                return sendResponse(ctx, err, config.disableSessionId);
-            });
+            function setSession() {
+                ctx.session.set(sessionData).save(function(err, session) {
+                    // apply the sid manually to the session, since only now do we have the id
+                    ctx.res.cookies.set('sid', session.id, { overwrite: true });
+
+                    return sendResponse(ctx, err, config);
+                });
+            }
+
+            // If the specified user collection has a login event, then run it before returning
+            if (userCollection.events.Login) {
+                domain.success = true;
+                userCollection.events.Login.run(ctx, domain, setSession);
+            } else {
+                setSession();
+            }
+
         })(ctx.req, ctx.res, ctx.next||ctx.done);
     } else {
         // nothing matched, sorry
         console.error('no module found: %s', parts[0]);
-        return sendResponse(ctx, 'bad credentials', config.disableSessionId);
+        return sendResponse(ctx, 'bad credentials', config);
     }
 };
 
 AuthResource.basicDashboard = {
   settings: [{
+    name        : 'usersCollection',
+    type        : 'text',
+    description : 'This is the name of the Users Collection, make sure the Collection exists before changing! Defaults to users.'
+  },{
     name        : 'SALT_LEN',
     type        : 'numeric',
     description : 'Length of the Password salt that is used by deployd. Do not change if you don\'t know what this is or your users may not login anymore! Defaults to 256.'
@@ -418,6 +418,10 @@ AuthResource.basicDashboard = {
     name        : 'disableSessionId',
     type        : 'checkbox',
     description : 'Disable appending the Session Id to the redirect URL. This is a security measure for the web. You can access the Session Id from the Cookie-Header.'
+  },{
+    name        : 'disableReturnParams',
+    type        : 'checkbox',
+    description : 'Disable appending the success/error to your URL. This is for the times you have a framework like AngularJS that controls your routing. You can access the user from the Users Collection\'s "/me".'
   },{
     name        : 'allowLocal',
     type        : 'checkbox',
@@ -440,32 +444,32 @@ AuthResource.basicDashboard = {
     description : 'Allow users to login via Google'
   },{
     name        : 'twitterConsumerKey',
-    type        : 'text'
-    //description : 'TWITTER_CONSUMER_KEY'
+    type        : 'text'/*,
+    description : 'TWITTER_CONSUMER_KEY'*/
   }, {
     name        : 'twitterConsumerSecret',
-    type        : 'text'
-    //description : 'TWITTER_CONSUMER_SECRET'
+    type        : 'text'/*,
+    description : 'TWITTER_CONSUMER_SECRET'*/
   },{
     name        : 'facebookAppId',
-    type        : 'text'
-    //description : 'TWITTER_CONSUMER_KEY'
+    type        : 'text'/*,
+    description : 'TWITTER_CONSUMER_KEY'*/
   }, {
     name        : 'facebookAppSecret',
-    type        : 'text'
-    //description : 'TWITTER_CONSUMER_SECRET'
+    type        : 'text'/*,
+    description : 'TWITTER_CONSUMER_SECRET'*/
   }, {
     name        : 'facebookScope',
     type        : 'text',
     description : 'If your application needs extended permissions, they can be requested here. Supply as JS-Array: "[\'read_stream\']"'
   }, {
     name        : 'githubClientId',
-    type        : 'text'
-    //description : 'TODO'
+    type        : 'text'/*,
+    description : 'TODO'*/
   }, {
     name        : 'githubClientSecret',
-    type        : 'text'
-    //description : 'TODO'
+    type        : 'text'/*,
+    description : 'TODO'*/
   }, {
     name        : 'githubScope',
     type        : 'text',
@@ -483,7 +487,3 @@ AuthResource.basicDashboard = {
   }
   ]
 };
-
-
-
-
