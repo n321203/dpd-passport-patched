@@ -61,41 +61,77 @@ AuthResource.prototype.initPassport = function() {
     // Will be called when socialLogins are done
     // Check for existing user and update
     // or create new user and insert
-    // Patch: New socialAuthCallback
     var socialAuthCallback = function(token, tokenSecret, profile, done) {
         debug('Login callback - profile: %j', profile);
 
-        var saveUser = {
-            socialAccountId: profile.id,
-            socialAccount: profile.provider,
-            name: profile.displayName,
-            profile: profile
-        };
-        
-        // If there is a facebook email address...
-        if(typeof(profile.emails) == "object" && profile.emails[0].value){
+        userCollection.store.first({socialAccountId: profile.id}, function(err, user) {
+            if(err) { return done(err); }
 
-            // If user is already registered (with username+password), don't create a new user...
-            dpd.users.get({username:profile.emails[0].value}, function(users, err){
-                if(err) { return done(err); }
-                if(users && users.length > 0)
-                    saveUser = users[0]; // Return existing user here (needed)
-                else{ // Add new user
-                    saveUser.username = profile.emails[0].value; // Email from facebook
-                    saveUser.password = "" + Math.round( Math.random() * 100000000000 );
+            // we need to fake the password here, because deployd will force us to on create
+            // There is no other way around the required checks for username and password.
+            var fakeLogin = {
+                    username: profile.provider + '_' + profile.id,
+                    password: 'invalidHash '+profile.id
+                },
+                saveUser = user || {
+                    // these properties will only be set on first insert
+                    socialAccountId: profile.id,
+                    socialAccount: profile.provider,
+                    name: profile.displayName,
+                    username: fakeLogin.username,
+                    password: fakeLogin.password
+                };
+
+            // update the profile on every login, so that we always have the latest info available
+            saveUser.profile = profile;
+
+            if(user) {
+                debug('updating existing user w/ id %s', user.id, profile);
+                var update = {profile: profile};
+
+                // backwards compatibility
+                // if(!user.password) update.password = fakeLogin.password;
+                // if(!user.username) update.username = fakeLogin.username;
+                delete saveUser.password;
+                delete saveUser.username;
+
+                userCollection.store.update(user.id, update, function(err, res){
+                    debug('updated profile for user');
+
+                    done(null, saveUser);
+                });
+            } else {
+                // new user
+                debug('creating new user w/ socialAccountId %s', saveUser.socialAccountId, profile);
+                saveUser.$limitRecursion = 1000;
+
+                if(typeof(profile.emails) == "object" && profile.emails[0].value){
+                    dpd.users.get({username:profile.emails[0].value}, function(users, err){
+                        if(err) { return done(err); }
+
+                        if(users && users.length > 0)
+                            saveUser = users[0];
+                        else 
+                            saveUser.username = profile.emails[0].value;
+
+                    })
                 }
-            })
-        }
-        else{
-            // Facebook didn't provide a user email. Let's store a default email and password (a dummy user, only accessible via facebook login)
-            saveUser.username = profile.provider + '_' + profile.id + "@example.com";
-            saveUser.password = "" + Math.round( Math.random() * 100000000000 );
-        }
-        dpd.users.post(saveUser, function(res, err){
-            if(err)
-                return done(err);
-            else 
-                done(null, res||saveUser)
+
+                // will run deployd post events
+                dpd[config.usersCollection].post(saveUser, function(res, err) {
+                    if(err) { return done(err); }
+
+                    // set the password hash to something that is not a valid hash which bypasses deployds checks (i.e. user can never login via password)
+                    userCollection.store.update({id: res.id}, {password: saveUser.password}, function() {
+                        debug('created profile for user');
+
+                        // cleanup before responding
+                        saveUser.id = res.id;
+
+                        done(null, saveUser);
+                    });
+                });
+            }
         });
     };
 
@@ -109,10 +145,12 @@ AuthResource.prototype.initPassport = function() {
                     var salt = user.password.substr(0, config.SALT_LEN),
                         hash = user.password.substr(config.SALT_LEN);
 
+                    // Patch: allow token login
+                    var DPD_PASSPORT_SALT = process.env.DPD_PASSPORT_SALT || Math.random().toString();
+
                     if(hash === UserCollection.prototype.hash(password, salt)) {
                         return done(null, user);
                     }
-                    // Patch: Login in with token – token should equal the hash of username + salt
                     else if(password == UserCollection.prototype.hash(username, DPD_PASSPORT_SALT)){  // Here the token is stored in the password field.
                         return done(null, user); 
                     }
@@ -255,9 +293,10 @@ AuthResource.prototype.handle = function(ctx, next) {
                 requestedModule = 'local';
             }
             break;
-        // PATCH: Allow loginWithToken
         case 'loginWithToken':
-            requestedModule = 'local';
+            if(this.config.allowLocal) {
+                requestedModule = 'local';
+            }
             break;
         case 'twitter':
             if(this.config.allowTwitter) {
