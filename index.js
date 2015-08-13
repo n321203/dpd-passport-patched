@@ -90,10 +90,10 @@ AuthResource.prototype.initPassport = function() {
                 var update = {profile: profile};
 
                 // backwards compatibility
-                // if(!user.password) update.password = fakeLogin.password;
-                // if(!user.username) update.username = fakeLogin.username;
-                delete saveUser.password;
-                delete saveUser.username;
+                if(!user.password) update.password = fakeLogin.password;
+                if(!user.username) update.username = fakeLogin.username;
+                // delete saveUser.password;
+                // delete saveUser.username;
 
                 userCollection.store.update(user.id, update, function(err, res){
                     debug('updated profile for user');
@@ -380,9 +380,9 @@ AuthResource.prototype.handle = function(ctx, next) {
             };
 
             // be backwards compatible here, check if the function already exists
-            // if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
-            //     sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
-            // }
+            if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
+                sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
+            }
             delete user.password;
 
             function setSession() {
