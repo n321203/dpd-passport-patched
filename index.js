@@ -380,9 +380,9 @@ AuthResource.prototype.handle = function(ctx, next) {
             };
 
             // be backwards compatible here, check if the function already exists
-            if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
-                sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
-            }
+            // if(typeof UserCollection.prototype.getUserAndPasswordHash === 'function') {
+            //     sessionData.userhash = UserCollection.prototype.getUserAndPasswordHash(user);
+            // }
             delete user.password;
 
             function setSession() {
